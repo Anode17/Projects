@@ -1,0 +1,202 @@
+---
+title: "Education Economics: Measuring the school effects"
+author: "Aslan Bakirov"
+date: "May 2021"
+output:
+  pdf_document:
+    latex_engine: lualatex
+    number_sections: no
+  html_document:
+    df_print: paged
+fontsize: 11pt
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(labelled)
+library(stringr)
+library(broom)
+library(stargazer)
+theme_set(theme_bw())
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE,
+                      message = FALSE,error = FALSE,
+                      fig.show = 'hold', fig.align = 'center',
+                      out.width = "70%")
+```
+  
+```{r data-imp}
+library(haven)
+NABC <- read_dta("NABC_hwdata.dta") %>% data.table() %>% filter(year8>2010)
+## omid10%in%c(035245,35243)
+
+#NABC[,.(.N,math10=mean(m_st10,na.rm = T),math8=mean(m_st8,na.rm = T),read10=mean(r_st10,na.rm = T)),omid10][order(-N)]
+
+my_school<-NABC[omid10==203061,]
+other_schools<-NABC[omid10!=203061,]
+
+#to_factor(my_school)
+```
+## Introduction    
+
+In this paper I explore the question whether there are school effects present in one of the high-schools of Budapest, which no longer serves the public. 
+
+## Data exploration.  
+
+The NABC dataset provides a broad range of variables to explore. One particularly important is the year a student attends the grade. Particularly, there are records of students attending their 6th grade up until 2017. Yet the dataset provides information for the year 2017 the latest, and this fact does not allow us to check the 10th grade performance of those students. To correct for this, I work with a subset of data with students who, by 2010, already attended the 8th grade (*year8>2010*).   
+
+The school identifiers were taken for the 10th grade, since the variable of interest is the 10th grade test scores.The school turned to be *203061* with about 1600 students. After getting rid of the *NA* values in the 10th grade test scores 1440 students are left.  
+Budapest Center of Economic Vocational Training (*Budapesti Gazdasági Szakképzési Centrum*, shortly BGSZC) is a school offering higher-level education, hence only the tenth grade results are present in the dataset. The three types of tracks offered are **four-year academic** (74 students), **mixed** (1273 students), and **vocational training** (93 students). Although according to \href{https://www.oktatas.hu/}{Oktatás} the school was terminated as of 2020, for our purposes it does not matter since we look only at the period before 2017.  
+
+```{r math}
+
+## excluding na
+my_school<-my_school[!is.na(m_st10),]
+my_school<-my_school[!is.na(r_st10),]
+my_school<-my_school[!is.na(r_st8),]
+my_school<-my_school[!is.na(m_st8),]
+## 
+my_school %>% group_by(year8) %>% summarise(read=median(m_st8))%>%
+  ggplot(aes(read,factor(year8),fill=read>0))+geom_col(show.legend = F)+labs(title="Median 8th grade test scores by cohort, BGSZC students",y="", x="median math scores")+scale_fill_brewer(palette = "Dark2",direction = -1)
+```
+## Choosing the control group.  
+To select the control group, I brush up the rest of the schools in the dataset that exactly match the characteristics of the students in the fixed school. First, the test scores of the grade 8 are matched, since the school of interest is offering higher-level tracks. From this I obtain 1600 potential control-group students for math test scores, and then try to ensure as much **common support** as I can by filtering the subset.     
+Among these 1600 students in the control group, I then take only those who attend the same study tracks as those offered at BGSZC. Furthermore, some of the NA values were also excluded. As a result, I am left with a control group of 1217 students, and 1064 in the treatment. Here I try to explain to what extent the BGSZC affects students' performance in the 10th grade math test.  
+Another essential moment is to ensure unconfoundedness. Since the selection into the high-school is no longer supporting random pattern, I turn to explain the features that make students select into this particular school. That is, I use **propensity scores** to account for the individual characteristics that better define the probability of attending BGSZC. 
+
+```{r control}
+##
+control_math<-other_schools[m_st8%in%my_school$m_st8,]
+
+## plot
+ggplot(control_math, aes(m_st8))+geom_histogram(alpha=0.7,fill="darkred")+
+  geom_histogram(data=my_school, aes(m_st8), fill="navy", alpha=0.5)+geom_text(label="BGSZC",aes(x=2,y=55),col="navy",show.legend = F,check_overlap=T)+geom_text(label="Control",aes(x=-1,y=100),col="darkred",show.legend = F,check_overlap=T)+labs(title="The distribution of 8th grade math test scores",x="Math score",y="")
+
+```
+## Confounders.   
+The variables I will control for in the following models can be summarized in three groups:   
+
+* a) **Mother's education, Free/ discounted school meal**, and **the number of books in the family**. 
+
+
+This group of variables is supposed to serve as a proxy for a student's endogenous characteristic - ability. Ability in the sense that it is inherited, and cultivated in the family. Mother's education is rather straightforward in accounting for the motivation to study further, whereas free/ discounted meal reflects the availability of sibling of the child (since it is common in Budapest to offer discounted meals for pupils whose siblings also attend high-school). The latter can also interfere with the economic background, yet here I assume it is more of a matter how much parental attention each child receives. Next, number of books can make the difference, since parents who are more intelligent tend to buy or own more books. The role of parents is obvious in the former two variables, yet here it is more of a matter of inherited ability. That is, parents who are capable have children who are also capable. The **distance to the school** is also included as to proxy the family income status.     
+
+* b) **Year, month of birth,** and **gender**.   
+
+
+The second group can be referred to as individual exogenous traits. By including month of birth I distinguish the policy effect on the cut-off date when a student can be admitted  to school. This is important since if a student does not qualify for the September cohort, because turns the age in November, she can have an (dis)advantage in next year since she would be among the eldest in the class. For teenage students or children this can mean a huge difference in growth.    
+
+* c) **Previous scores, track type**.    
+
+
+The last group controls are the academic covariates. Track type of the student is also a variable of interest alongside with the *treatment*.  
+
+```{r covariates,results='hide'}
+## distance
+"control_math[dist_bus_6ac_8%in%my_school$dist_bus_6ac_8,.N] ## 664 observations
+control_math[dist_bus_6ac_6%in%my_school$dist_bus_6ac_6,.N] ## 688 observations
+## Birth date 
+control_math[t1_y_10%in%my_school$t1_y_10,.N] ## 1680 observations
+control_math[t1_m_10%in%my_school$t1_m_10,.N] ## 1680 observations"
+#ggplot(control_math, aes(to_factor(t1_y_10)))+geom_bar(alpha=0.7,fill="darkred")+
+  #geom_bar(data=my_school, aes(to_factor(t1_y_10)), fill="navy", alpha=0.5)
+## gender
+#my_school[,.N,to_factor(t2_10)]
+#ggplot(control_math, aes(to_factor(t2_8)))+geom_histogram(alpha=0.7,fill="darkred",stat = "count")+
+  #geom_histogram(data=my_school, aes(to_factor(t2_8)),stat = "count", fill="navy", alpha=0.5)+coord_flip()
+## family educ
+my_school<-my_school[!is.na(t28_8),]
+control_math<-control_math[!is.na(t28_8),]
+#control_reading[t28_8%in%my_school$t28_8,.N] ## look for nas
+
+#ggplot(control_reading, aes(to_factor(t28_8)))+geom_histogram(alpha=0.7,fill="darkred",stat = "count")+
+  #geom_histogram(data=my_school, aes(to_factor(t28_8)),stat = "count", fill="navy", alpha=0.5)+coord_flip()
+## books
+#control_math[t36_8%in%my_school$t36_8,.N] ## look for NAs
+#ggplot(control_math, aes(to_factor(t36_8)))+geom_histogram(alpha=0.7,fill="darkred",stat = "count")+
+  #geom_histogram(data=my_school, aes(to_factor(t36_8)),stat = "count", fill="navy", alpha=0.5)+coord_flip()
+my_school<-my_school[!is.na(t36_8),]
+control_math<-control_math[!is.na(t36_8),]
+## academic tracks:
+
+##
+dt_math<-rbind(my_school,control_math) %>% mutate(treatment=as.integer(ifelse(omid10==203061,1,0)))
+dt_math<-dt_math[type10%in%c(4,5,6),]
+```
+
+## Methods   
+
+To begin with, I estimate the propensity scores to account for the selection bias, and improve unconfoundedness assumption, which essential to move further. I use the logit model with the covariates mentioned above to estimate the probability. The predicted vs actual probabilities are plotted on the histogram below, and suggest that the model leaves out only a modest bit of students who were actually in the treatment.    
+Since this is also a prediction task, I could use the regularized LASSO model with cross-validation to determine which variables have a major impact on the selection procedure. However, exploring the causality in this case is ambiguous due to the fact that LASSO can assign higher penalty to one of the variables which is correlated with another, leaving crooked importance lists. This is better suited for causal ML methods. Furthermore, the number of covariates is not very large compared to sample size.  
+
+
+
+```{r pr_scores}
+logits<-glm(treatment~t18b_8+t36_8+t36_10+type10+m_st8+t1_y_10+t2_10+time_bus_6ac_10,data=dt_math,family = binomial("logit"))
+dt_math[,preds:=predict.glm(logits,newdata=dt_math,type = "response")]
+
+dt_math %>% mutate(labo=ifelse(treatment==1,"BGSZC","Control")) %>%
+  ggplot(aes(preds,fill=preds>0.49))+geom_histogram(show.legend = F)+facet_wrap(~labo)+scale_fill_brewer(palette = "Set2")+ggtitle("Common support with probabilities")+labs(x="propensity scores")
+```
+
+
+  
+## Analysis.  
+First, let's start with a simple regression explaining the math test scores with the school without any confounders, just propensity scores added. It reveals the positive and significant effect of the treatment (*p-value<0.01*).  
+
+
+```{r word_table,echo=FALSE}
+##
+model1<-lm(m_st10~treatment+preds,data=dt_math)
+knitr::kable(tidy(model1),digits = 3,caption = "Treatment and Propensity scores")
+## Importannt
+model2<-lm(m_st10~treatment+t18a_8+t18b_8+t18a_10+t18b_10+t28_8+t36_8+t36_10,data = dt_math)
+## 
+#model3<-lm(m_st10~treatment*to_factor(type10)+m_st8+t5b_8+t5b_10,data=dt_math)
+#summary(model3)
+##
+#model4<-lm(m_st10~treatment+factor(t1_y_10)+as.factor(t1_m_10)+to_factor(t2_10),data=dt_math)
+##
+```
+
+In the next regression all the covariates listed prior are included, both for current period (10th grade) and the last period (8th grade), with **inverse propensity scores as weights**. Among interesting findings, there is significant negative effect of the *free school meal*. This is in line with prior expectations, yet to differentiate between the effect of the number of siblings and the income status of the family is hard, especially when the *distance* turns out to be impractical and insignificant. It is possible to argue that families with lots of children prefer to live further from the center, or in wealthier and larger families where parents work hard child-parent quality time is little and thus there's one variable already representing it all.  
+The greater the number of books at home, the better is the performance on the test. As such, kids who had 300-600 books in 8th grade score *0.2* more than those who had less than 50. In general, owning more books at an early age impacts the scores more than the same amount of books later on.  
+Girls score *0.15 less* on their math test than boys, vocational track students have the lowest scores, and the mixed track score is *0.21 less* than academic track. Kids born in September fare worse in exams than those born in January and April.  
+The treatment variable, indicates that the academic track students at BGSZC perform *worse (-0.29)* than the control group, controlling for ability, exogenous individual factors and previous attainment. For instance, the interaction term *treatment:mixed* indicates the coefficient *0.39*, meaning among students of mixed tracks, the conditional average treatment effect is `r -0.21+0.39`.   
+
+```{r w2,results='asis'}
+
+model5<-lm(m_st10~t18a_8+t18b_8+t18a_10+t18b_10+factor(t28_8)+factor(t36_8)+factor(t36_10)+treatment*factor(type10)+m_st8+t1_y_10+factor(t1_m_10)+treatment*factor(t2_10)+time_bus_6ac_10,weights = ipw,data=dt_math[,ipw:=ifelse(treatment==1, 1/preds,1/(1-preds))])
+#cf<-grf::causal_forest(as.matrix(dt_math[!is.na(m_st10),c(t18a_8,t18b_8,t18a_10,t18b_10,t28_8,t36_8,t36_10,type10,m_st8,t1_y_10,factor(t1_m_10),t2_10,time_bus_6ac_10)]),dt_math[!is.na(m_st10),m_st10],dt_math[!is.na(m_st10),treatment],num.trees=200)
+#grf::variable_importance(cf)
+knitr::kable(tidy(model5) %>% filter(p.value<0.1) %>% mutate(term= c("discounted meal, class 8",
+                                                                            "free meal, class 10",
+                                                                            "50 books owned",
+                                                                            "max 150 books owned",
+                                                                            "max 300 books owned",
+                                                                            "300-600 books owned",
+                                                                            "1000+ books at home",
+                                                                            "max 150 books owned,class 10",
+                                                                            "max 300 books owned,class 10",
+                                                                            "300-600 books owned,class 10",
+                                                                            "treatment",
+                                                                            "mixed type",
+                                                                            "vocational type",
+                                                                            "math score,class 8",
+                                                                            "birth month=April",
+                                                                            "birth month=September","female",
+                                                                            "treatment*mixed type",
+                                                                            "treatment*vocational type")),digits = 3,caption = "All covariates, IPW")
+```
+
+## Conclusion.  
+The analysis shows that the treatment group students have lower math scores, controlled for ability, exogenous characteristics, and previous performance. The treatment - BGSZC students, of mixed tracks, however, score higher than other students from the mixed tracks in the control group. 
+
+## Limitations.  
+
+Firstly, this setting is better approached by the clustered methods. Next, to add more variables, the OLS regression is no longer an option, and either kernel regression or causal ML models can be used to exploit high-dimensionality of the data.   
+
+
