@@ -1,0 +1,168 @@
+---
+title: "Hedonic Analysis of Melbourne Real estate Prices"
+author: "Aslan Bakirov"
+date: "May 2021"
+output: pdf_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(scales)
+library(lubridate)
+library(corrplot)
+theme_set(theme_bw())
+
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE,message=FALSE, out.width = "70%",fig.align = 'center')
+```
+
+## Introduction.  
+
+```{r loading-data}
+melb_data<-fread("melb_data.csv")
+```
+
+Since 2010 various officials and real-estate analysts have claimed that Australia is in a property bubble. Pandemic only reviled those characteristics of the real estate market, since the start of 2021 number of house loans, property prices and the number of auctions has increased significantly. There are multiple reasons behind that such as low interest rates, the government program called *“First Time Buyers”*, and apparently, the disruptions brought about by COVID-19. All those market-specific characteristics make it compelling to work with Australian real estate data.   
+
+The most hectic part of the decade started is the period from 2016 to 2018. It is during these years that real estate prices in large cities, have increased substantially.   
+
+The data indicates that 2016-2017 is the period when real-estate prices boomed in the biggest cities of Australia. Later, since 2018 Q2 it was believed that the housing bubble deflated at that time. Yet, given the current trends of the market, as with the pandemic the prices are on the rise again, it is hard to conclude what is the driver and the mechanism behind the housing prices in Australia.  
+
+A case in point is Melbourne, where the house prices rose in the given period. Apart from the reasons attributable to Melbourne’s mobile population, in this paper I will try to explain how the housing prices were determined in the city. The method of hedonic regression is applied to derive the insights I am after, and finally an own price index is calculated and visualized.   
+
+## Data Exploration  
+
+The dataset used for the analysis is a snapshot of the Kaggle dataset, that was scraped from the publicly available results from the Australian Ibsite Domain.com.au. The original dataset contains a larger number of observations over a bit longer period of time (2016-2018). The snapshot that I use is different in the sense that it only captures the period when the housing prices skyrocketed, i.e. 2016 to 2017.   
+
+It contains multiple variables such as **Address, Rooms, Price, Type of the property** *(Type: br - bedroom(s); h - house; u - unit, duplex; t - townhouse; dev site - development site; ores - other residential)*, **Date** when the property was sold, **Distance from CBD, Number of Bathrooms, Number of Parking slots, Number of Bedrooms**.   
+
+Initially, the dataset contained 13580 observations. During the exploratory data analysis, I revealed that most of the numeric variables needed outlier handling. As such, real estate slots with more bedrooms than rooms, where number of rooms and bathrooms exceed 5 and 4 respectively were not included in the final version. Additionally, properties which were more expensive than 2.2 millions of Australian dollars were also considered as outliers. This decision can be questioned and countered with argument that conversion to log-scale eliminates this problem. Although that is correct, the price variable did not lose much from this capping, whereas if I were to save, it would save only 200 houses and added outliers from both ends.
+There are more outliers and non-available values for the year a house was built. As a result, only the buildings that were built after 1875 are involved in the analysis.   
+
+Houses where the number of bedrooms was greater than the number of total rooms were excluded. Homes with more than 5 bathrooms and 5 bedrooms also were left out as outliers. Below we can check the descriptive statistics of numeric variables the final dataset.
+
+
+```{r data-cleaning,results='asis'}
+#glimpse(melb_data)
+#melb_data[,uniqueN(Propertycount)]
+#melb_data[,.(Rooms,Price,Distance,Postcode,Bedroom2,Bathroom,Landsize,BuildingArea,YearBuilt,Propertycount)] %>% summary()
+melb_data<- melb_data[!Bedroom2>Rooms]
+melb_data<-melb_data[Rooms<=5]
+melb_data<-melb_data[Bedroom2<=5,price_log:=log(Price)]
+melb_data<-melb_data[Bathroom<=4]
+melb_data<-melb_data[Price<2200000,]
+
+melb_data<-melb_data[!is.na(YearBuilt)&YearBuilt>1850]
+melb_data<-melb_data[!is.na(BuildingArea)&BuildingArea<275&BuildingArea>1,]
+melb_data[,unit_price:=Price/BuildingArea]
+## Date
+melb_data[,Date:=dmy(Date)]
+##
+#melb_data[,median(unit_price,na.rm = T),Type]
+#melb_data[,median(Distance),Suburb]
+stargazer::stargazer(melb_data,out.header = FALSE, header = FALSE,title = "Descriptive statistics")
+```
+
+
+
+Before moving on, let’s take a step back and familiarize ourselves with how the house market in Australia operates. In large cities, akin Melbourne, houses are sold either privately, directly by the owners, or by the real estate agents. The latter, in turn, can sell the property either privately or on the auction. This dataset that I work on contains houses only traded publicly on auctions, and has several specifications on the type of the trade. For instance, Method how property sold (S - property sold; SP - property sold prior; PI - property passed in; VB - vendor bid; SA - sold after auction). The semantics are as following: If the property is sold prior to auction, means there has been an offer to the vendor that overthrew the benefits from the auction; If the vendor bids on the property, it signals a property of a greater quality; when the public bid does not reach the reservation price of the vendor, the right to negotiate the purchase is passed in to the highest bidder; if the highest bidder and the subsequent higher bids fail to succeed in bargaining for the house, it is sold after the auction; if the bid for property reaches the reservation price of the vendor, it is simply sold.  
+
+Bearing this in mind, we might hypothesize that properties sold prior to the auction might be overpriced, since this offer makes the vendor to forego the possible highest bids on the auction, where he/she plans to sell for the reservation price.   
+
+Furthermore, I have created the age variable, measuring how old the building was when sold. Plotting against the price it reveals somewhat quadratic relationship:  
+
+```{r graps, dpi=400}
+
+melb_data %>% mutate(age=as.integer(year(Date))-as.integer(YearBuilt)) %>% 
+  ggplot(aes(age,price_log))+geom_point(show.legend = FALSE)+geom_smooth()+scale_color_viridis_c()+ggtitle("Age of the house vs Price")+xlab("Age")+ylab("Log of Price")+scale_y_continuous(labels = comma)
+##
+melb_data %>% mutate(age=as.integer(year(Date))-as.integer(YearBuilt)) %>% group_by(age,Bedroom2) %>% summarise(avg_price=median(unit_price)) %>%
+  ggplot(aes(age,avg_price,group=factor(Bedroom2),col=factor(Bedroom2)))+geom_point()+coord_cartesian(ylim=c(0,30000))+labs(title="Older buildings have less bedrooms, but still cost more?!",col="# Bedrooms",x="Age",y="")+scale_colour_viridis_d()+expand_limits(x=0)+scale_y_continuous(labels=dollar)
+```
+  
+```{r grapsm,dpi=400}
+
+melb_data %>% filter(!is.na(unit_price)) %>% mutate(age=as.integer(year(Date))-as.integer(YearBuilt))  %>% group_by(Distance) %>% summarise(age=median(age),avg_prc=median(unit_price)) %>% ggplot(aes(Distance,age,col=avg_prc))+geom_point(position = "jitter",alpha=0.9)+scale_color_viridis_c(labels=c("0","$5,000","$10,000","$15,000","$20,000"))+labs(title = " Older buildings are closer to CBD, and cost more!",subtitle = "100-y.o. houses locate within 5km of the CBD",y="Age",col="price/sq. meter")
+
+```
+
+```{r fine-plot}
+##Additional material: maps
+#Install two packages
+library(osmdata)
+library(sf)
+avg_regs<-melb_data[,.(avg_price=median(Price),lat=mean(Lattitude),long=mean(Longtitude)),c("Suburb")]
+
+bb <- getbb('Melbourne')
+quans <- opq(bbox = bb) %>%
+  add_osm_feature(key = 'admin_level', value = '9') %>% #admin_level 9 is the district level in the data
+  osmdata_sf 
+quansPoly <- quans$osm_multipolygons
+
+quansPoly <- quansPoly %>% arrange(name)
+quansPoly$district <- as.factor(quansPoly$name)
+#Price map
+ left_join(quansPoly,avg_regs,by=c("name"="Suburb")) %>% 
+   ggplot(aes(fill = avg_price/1000000, group = district)) +
+  geom_sf(alpha=0.8)+ labs(x="",y="")+scale_fill_viridis_c(direction = 1)+labs(title="Median real estate prices in the suburbs of Melbourne",subtitle = "Suburbs in Melbourne are equivalent of districts", fill="Price (in Millions)")+coord_sf(xlim = c(144.4, 145.5), ylim = c(-38.2, -37.4))
+
+```
+
+
+
+## Modeling  
+
+Having become familiar with the dataset, I proceed with modeling. In this section, I construct a set of models, all hedonic regressions, trying to explain the variations in real estate prices in Melbourne.
+First, I  include intrinsic characteristics of a building such as the number of bedrooms, bathrooms, the total number of rooms land and building size in square meters as predictors, and log of price as the dependent variable. The results show that land size is not a significant predictor of the price.   
+
+The first model only reflects the internal characteristics' impact on the price, yet even that is hard to state when I left out a couple of extremely important factors. Thus, In the second model, I add the distance from the City Business District (CBD) as a proxy for location. Covariates controlling for the car spots and the age of the building are also added. The model includes polynomials of the second degree for age and bedroom since I have observed a quadratic-like relationship between price and these in the graphs.
+Finally, to control for the time trend and possible seasonality that comes with it, I make use of monthly dummies for each year. This decision stems from the fact that our data is only for two years, and contains patterns occurring more often than a year. Monthly dummies are extracted from the Date variable, indicating when a building has been sold, yet there were missing months in the data, namely March 2016. February 2016 is set as the base month.  
+
+
+This also allows us to calculate the price index changing over time, not worrying about the assumption that other characteristics of the buildings hold constant over time. Since I included all the confounders, I believe may affect the price, the regression estimates of the dummies contain only the time change in the prices.  
+
+## Results   
+
+Below, I present the hedonic regression model which explains the log-price using intrinsic characteristics of the house, how it was sold, and distance from CBD.   
+
+
+```{r models, results='asis'}
+melb_data<-melb_data %>% mutate(age=as.integer(year(Date))-as.integer(YearBuilt))
+melb_data[,months:=month(Date)]
+model1<-lm(price_log~Rooms+Distance+poly(Bedroom2,2)+Bathroom+Car+BuildingArea+age+I(age^2)+Date,data=melb_data)
+model2<-lm(price_log~Rooms+Distance+poly(Bedroom2,2)+Bathroom+Car+BuildingArea+age+I(age^2)+
+             factor(Method),data=melb_data)
+##
+melb_data$preds<-predict(model1,newdata = melb_data)
+##
+melb_data[,dums:=as.integer(paste0(year(Date),ifelse(months<10,paste0(0,months),months)))]
+##
+model3<-lm(price_log~Rooms+Distance+poly(Bedroom2,2)+Bathroom+Car+BuildingArea+age+I(age^2)+
+             factor(dums),data=melb_data)
+
+knitr::kable(broom::tidy(model2) %>% filter(p.value<0.06),digits=3,caption="Hedonic regression")
+```
+
+It reveals that, the buildings lose 2.2% in their price for each kilometer they are farther from the CBD. This is in line with the “three-locations rule”, albeit the distance from CBD is only a rough proxy for location. For better development of this question in Melbourne, a proper spatial analysis is required. Particularly interest in this approach should be devoted to the metropolitan migration, since Melbourne is one of the fastest growing cities in OECD.   
+
+Apparently, the largest predictor of the prices is the number of rooms, as such, of two houses with the same amount of bedrooms, bathrooms, car spots, and in the distance same from the center, the one with an additional room would cost 11% more. This is also the case if they differed only with one extra bathroom, ceteris paribus.   
+
+The polynomial Age variable shows a 4% growth in price with each year, after the house turns 50. Among the methods of merchandise, the only significant one is *Sold*, meaning that properties Sold in the Auction cost 8% more than those passed in. This makes sense if the bid does not reach the reservation price of the vendor   
+
+## Price index   
+
+```{r s}
+
+library(broom)
+library(readr)
+
+## Price Index graph
+tidy(model3)[11:27,] %>% mutate(term=factor(parse_number(term))) %>% ggplot(aes(term,(exp(estimate)-1),group=1))+geom_point(col="darkred")+theme(axis.text.x=element_text(angle=45, hjust=1))+labs(title = "Calculated Price Index over time",x="",y="")+scale_y_continuous(label=scales::percent)+geom_line()
+## Prices rose from the April of 2016, to the November of the 2016 for nearly 11%, base month is February 2016.
+```
+
+Finally, I added the monthly dummies for each month that I have in the dataset to the previous model, and came up with own house price index. This index is also good since it does not depend on the assumption that the price change is not driven by intrinsic characteristics of the property since they are time-invariant. I can relax this assumption since I include them in our hedonistic regression. According to this, I determine that price boom started from the April of 2016, to the November of the 2016. Prices rose for nearly 11%, base month is February 2016.
+
